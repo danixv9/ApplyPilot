@@ -574,15 +574,15 @@ If something unexpected happens and these instructions don't cover it, figure it
    - Output RESULT:APPLIED. Done.
    After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
 5. Login wall?
-   5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
-   5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's SSO -> RESULT:FAILED:sso_required.
-   5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
-       LINKEDIN LOGIN: If the login is on linkedin.com, use: {personal.get('linkedin_email', personal['email'])} / {personal.get('linkedin_password', personal.get('password', ''))}
-   5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
-   5e. Sign in failed? Try sign up with same email and password.
-   5f. Need email verification? Use search_emails + read_email to get the code.
-   5g. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
-   5h. All failed? Output RESULT:FAILED:login_issue. Do not loop.
+   5a. LINKEDIN LOGIN (ALWAYS attempt): If the URL contains linkedin.com, you MUST attempt login. LinkedIn is NOT SSO — it is a supported login. Use: {personal.get('linkedin_email', personal['email'])} / {personal.get('linkedin_password', personal.get('password', ''))}. Do NOT output login_required or sso_required for LinkedIn. Always try signing in.
+   5b. BLOCKED SSO: If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page (NOT LinkedIn) -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
+   5c. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's LinkedIn, login per 5a. If it's blocked SSO -> RESULT:FAILED:sso_required.
+   5d. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
+   5e. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
+   5f. Sign in failed? Try sign up with same email and password. (Exception: do NOT sign up on LinkedIn — only sign in.)
+   5g. Need email verification? Use search_emails + read_email to get the code.
+   5h. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
+   5i. All failed? Output RESULT:FAILED:login_issue. Do not loop. NEVER output "login_required" — that is not a valid result code.
 6. Upload resume. ALWAYS upload fresh -- delete any existing resume first, then browser_file_upload with the PDF path above. This is the tailored resume for THIS job. Non-negotiable.
 7. Upload cover letter if there's a field for it. Text field -> paste the cover letter text. File upload -> use the cover letter PDF path.
 8. Check ALL pre-filled fields. ATS systems parse your resume and auto-fill -- it's often WRONG.
