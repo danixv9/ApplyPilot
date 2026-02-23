@@ -63,21 +63,17 @@ if platform.system() != "Windows":
 # MCP config
 # ---------------------------------------------------------------------------
 
-def _make_mcp_config(cdp_port: int) -> dict:
-    """Build MCP config dict for a specific CDP port."""
+def _make_mcp_config(worker_id: int, headless: bool = False) -> dict:
+    """Build MCP config dict — Playwright manages its own browser."""
+    pw_args = [f"--viewport-size={config.DEFAULTS['viewport']}"]
+    if headless:
+        pw_args.append("--headless")
+
     return {
         "mcpServers": {
             "playwright": {
-                "command": "npx",
-                "args": [
-                    "@playwright/mcp@latest",
-                    f"--cdp-endpoint=http://localhost:{cdp_port}",
-                    f"--viewport-size={config.DEFAULTS['viewport']}",
-                ],
-            },
-            "gmail": {
-                "command": "npx",
-                "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
+                "command": "playwright-mcp",
+                "args": pw_args,
             },
         }
     }
@@ -231,9 +227,8 @@ def gen_prompt(target_url: str, min_score: int = 7,
     prompt_file.write_text(prompt, encoding="utf-8")
 
     # Write MCP config for reference
-    port = BASE_CDP_PORT + worker_id
     mcp_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
-    mcp_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
+    mcp_path.write_text(json.dumps(_make_mcp_config(worker_id)), encoding="utf-8")
 
     return prompt_file
 
@@ -286,7 +281,8 @@ def reset_failed() -> int:
 # ---------------------------------------------------------------------------
 
 def run_job(job: dict, port: int, worker_id: int = 0,
-            model: str = "sonnet", dry_run: bool = False) -> tuple[str, int]:
+            model: str = "sonnet", dry_run: bool = False,
+            headless: bool = False) -> tuple[str, int]:
     """Spawn a Claude Code session for one job application.
 
     Returns:
@@ -308,9 +304,9 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         dry_run=dry_run,
     )
 
-    # Write per-worker MCP config
+    # Write per-worker MCP config — Playwright manages its own browser
     mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
-    mcp_config_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
+    mcp_config_path.write_text(json.dumps(_make_mcp_config(worker_id, headless=headless)), encoding="utf-8")
 
     # Build claude command
     cmd = [
@@ -337,6 +333,11 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+
+    # Ensure npm global bin is on PATH so Claude CLI can find playwright-mcp
+    npm_bin = Path(os.environ.get("APPDATA", "")) / "npm"
+    if npm_bin.exists():
+        env["PATH"] = str(npm_bin) + os.pathsep + env.get("PATH", "")
 
     worker_dir = reset_worker_dir(worker_id)
 
@@ -463,6 +464,12 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                              last_action=f"{result_status} ({elapsed}s)")
                 return result_status.lower(), duration_ms
 
+        if "RESULT:PERMISSION_REQUIRED" in output:
+            add_event(f"[W{worker_id}] PERMISSION_REQUIRED ({elapsed}s): {job['title'][:30]}")
+            update_state(worker_id, status="permission_required",
+                         last_action=f"PERMISSION_REQUIRED ({elapsed}s)")
+            return "permission_required", duration_ms
+
         if "RESULT:FAILED" in output:
             for out_line in output.split("\n"):
                 if "RESULT:FAILED" in out_line:
@@ -587,13 +594,12 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 
         empty_polls = 0
 
-        chrome_proc = None
         try:
-            add_event(f"[W{worker_id}] Launching Chrome...")
-            chrome_proc = launch_chrome(worker_id, port=port, headless=headless)
+            add_event(f"[W{worker_id}] Starting: {job['title'][:40]}...")
 
             result, duration_ms = run_job(job, port=port, worker_id=worker_id,
-                                            model=model, dry_run=dry_run)
+                                            model=model, dry_run=dry_run,
+                                            headless=headless)
 
             if result == "skipped":
                 release_lock(job["url"])
@@ -604,6 +610,11 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 applied += 1
                 update_state(worker_id, jobs_applied=applied,
                              jobs_done=applied + failed)
+            elif result == "permission_required":
+                mark_result(job["url"], "permission_required",
+                            "syracuse_ny", permanent=True,
+                            duration_ms=duration_ms)
+                add_event(f"[W{worker_id}] PERMISSION REQUIRED: {job['title'][:30]}")
             else:
                 reason = result.split(":", 1)[-1] if ":" in result else result
                 mark_result(job["url"], "failed", reason,
@@ -625,9 +636,6 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
             release_lock(job["url"])
             failed += 1
             update_state(worker_id, jobs_failed=failed)
-        finally:
-            if chrome_proc:
-                cleanup_worker(worker_id, chrome_proc)
 
         jobs_done += 1
         if target_url:

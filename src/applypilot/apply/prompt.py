@@ -208,10 +208,17 @@ def _build_hard_rules(profile: dict) -> str:
     if preferred_name and preferred_name != full_name.split()[0]:
         name_rule += f' Preferred name = {preferred_name}. Use "{display_name}" unless a field specifically says "legal name".'
 
+    # LinkedIn name mismatch note
+    linkedin_email = personal.get("linkedin_email", "")
+    linkedin_name_note = ""
+    if linkedin_email:
+        linkedin_name_note = f"""
+4. LINKEDIN NAME: The LinkedIn account ({linkedin_email}) may show a different first name (e.g. "Ifeanyi" instead of "Charles"). This is the SAME person — the LinkedIn profile name is being updated. Do NOT flag this as a name mismatch. Proceed with the application. The resume name ({full_name}) is correct."""
+
     return f"""== HARD RULES (never break these) ==
 1. Never lie about: citizenship, work authorization, criminal history, education credentials, security clearance, licenses.
 2. {work_auth_rule}
-3. {name_rule}"""
+3. {name_rule}{linkedin_name_note}"""
 
 
 def _build_captcha_section() -> str:
@@ -545,7 +552,7 @@ If something unexpected happens and these instructions don't cover it, figure it
 - NEVER grant camera, microphone, screen sharing, or location permissions. If a site requests them -> RESULT:FAILED:unsafe_permissions
 - NEVER do video/audio verification, selfie capture, ID photo upload, or biometric anything -> RESULT:FAILED:unsafe_verification
 - NEVER set up a freelancing profile (Mercor, Toptal, Upwork, Fiverr, Turing, etc.). These are contractor marketplaces, not job applications -> RESULT:FAILED:not_a_job_application
-- NEVER agree to hourly/contract rates, availability calendars, or "set your rate" flows. You are applying for FULL-TIME salaried positions only.
+- Contract/hourly positions are acceptable if the annualized rate meets the salary floor. Calculate: hourly_rate * 2080 >= salary floor? If yes, proceed. If no, RESULT:FAILED:below_salary_floor.
 - NEVER install browser extensions, download executables, or run assessment software.
 - NEVER enter payment info, bank details, or SSN/SIN.
 - NEVER click "Allow" on any browser permission popup. Always deny/block.
@@ -561,6 +568,7 @@ If something unexpected happens and these instructions don't cover it, figure it
 1. browser_navigate to the job URL.
 2. browser_snapshot to read the page. Then run CAPTCHA DETECT (see CAPTCHA section). If a CAPTCHA is found, solve it before continuing.
 3. LOCATION CHECK. Read the page for location info. If not eligible, output RESULT and stop.
+   SYRACUSE CHECK: If the job location mentions Syracuse, New York (Syracuse, NY) in any form, do NOT auto-apply. Output RESULT:PERMISSION_REQUIRED:syracuse_ny immediately. This applies whether the job is remote, hybrid, or onsite — any mention of Syracuse, NY triggers this rule.
 4. Find and click the Apply button. If email-only (page says "email resume to X"):
    - send_email with subject "Application for {job['title']} -- {display_name}", body = 2-3 sentence pitch + contact info, attach resume PDF: ["{pdf_path}"]
    - Output RESULT:APPLIED. Done.
@@ -569,6 +577,7 @@ If something unexpected happens and these instructions don't cover it, figure it
    5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
    5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's SSO -> RESULT:FAILED:sso_required.
    5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
+       LINKEDIN LOGIN: If the login is on linkedin.com, use: {personal.get('linkedin_email', personal['email'])} / {personal.get('linkedin_password', personal.get('password', ''))}
    5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
    5e. Sign in failed? Try sign up with same email and password.
    5f. Need email verification? Use search_emails + read_email to get the code.
@@ -589,6 +598,7 @@ RESULT:APPLIED -- submitted successfully
 RESULT:EXPIRED -- job closed or no longer accepting applications
 RESULT:CAPTCHA -- blocked by unsolvable captcha
 RESULT:LOGIN_ISSUE -- could not sign in or create account
+RESULT:PERMISSION_REQUIRED:syracuse_ny -- job is in Syracuse, NY; needs manual approval before applying
 RESULT:FAILED:not_eligible_location -- onsite outside acceptable area, no remote option
 RESULT:FAILED:not_eligible_work_auth -- requires unauthorized work location
 RESULT:FAILED:reason -- any other failure (brief reason)

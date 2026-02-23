@@ -23,6 +23,9 @@ blocked:
     - "%google.jobs%"
     - "%accenture%"
     - "%workopolis.com/out%"
+    - "%turing.com%"
+    - "%developers.turing.com%"
+    - "%dataannotation.tech%"
 
 # ── Blocked SSO domains — cannot authenticate through these ──────────────
 blocked_sso:
