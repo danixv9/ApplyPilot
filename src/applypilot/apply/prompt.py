@@ -574,7 +574,7 @@ If something unexpected happens and these instructions don't cover it, figure it
    - Output RESULT:APPLIED. Done.
    After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
 5. Login wall?
-   5a. LINKEDIN LOGIN (ALWAYS attempt): If the URL contains linkedin.com, you MUST attempt login. LinkedIn is NOT SSO — it is a supported login. Use: {personal.get('linkedin_email', personal['email'])} / {personal.get('linkedin_password', personal.get('password', ''))}. Do NOT output login_required or sso_required for LinkedIn. Always try signing in.
+   5a. LINKEDIN LOGIN (ALWAYS attempt): If the URL contains linkedin.com, you MUST attempt login. LinkedIn is NOT SSO — it is a supported login. Use: {personal.get('linkedin_email', personal['email'])} / {personal.get('linkedin_password', personal.get('password', ''))}. Do NOT output login_required or sso_required for LinkedIn. Always try signing in. LinkedIn WILL show a CAPTCHA after login — this is expected. Run CAPTCHA DETECT and solve it via CapSolver. Do not give up on LinkedIn CAPTCHAs; retry the solve at least twice before falling back.
    5b. BLOCKED SSO: If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page (NOT LinkedIn) -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
    5c. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's LinkedIn, login per 5a. If it's blocked SSO -> RESULT:FAILED:sso_required.
    5d. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
