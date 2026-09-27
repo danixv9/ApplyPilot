@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
+from applypilot.config import RESUME_PATH, RESUME_PDF_PATH, TAILORED_DIR, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
@@ -29,6 +29,16 @@ from applypilot.scoring.validator import (
 log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5  # max cross-run retries before giving up
+
+
+def _is_supported_ats(url: str | None) -> bool:
+    u = (url or "").lower()
+    return (
+        "jobs.ashbyhq.com" in u
+        or "jobs.lever.co" in u
+        or "lever.co" in u
+        or "greenhouse.io" in u
+    )
 
 
 # ── Prompt Builders (profile-driven) ──────────────────────────────────────
@@ -358,11 +368,12 @@ def tailor_resume(
     Returns:
         (tailored_text, report) where report contains validation details.
     """
+    desc_text = (job.get("full_description") or job.get("description") or "")
     job_text = (
         f"TITLE: {job['title']}\n"
         f"COMPANY: {job['site']}\n"
         f"LOCATION: {job.get('location', 'N/A')}\n\n"
-        f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
+        f"DESCRIPTION:\n{desc_text[:6000]}"
     )
 
     report: dict = {"attempts": 0, "validator": None, "judge": None, "status": "pending"}
@@ -481,7 +492,7 @@ def run_tailoring(min_score: int = 7, limit: int = 20) -> dict:
                 f"Location: {job.get('location', 'N/A')}\n"
                 f"Score: {job.get('fit_score', 'N/A')}\n"
                 f"URL: {job['url']}\n\n"
-                f"{job.get('full_description', '')}"
+                f"{job.get('full_description') or job.get('description') or ''}"
             )
             job_path.write_text(job_desc, encoding="utf-8")
 
@@ -500,6 +511,7 @@ def run_tailoring(min_score: int = 7, limit: int = 20) -> dict:
 
             result = {
                 "url": job["url"],
+                "application_url": job.get("application_url"),
                 "path": str(txt_path),
                 "pdf_path": pdf_path,
                 "title": job["title"],
@@ -510,6 +522,7 @@ def run_tailoring(min_score: int = 7, limit: int = 20) -> dict:
         except Exception as e:
             result = {
                 "url": job["url"], "title": job["title"], "site": job["site"],
+                "application_url": job.get("application_url"),
                 "status": "error", "attempts": 0, "path": None, "pdf_path": None,
             }
             log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
@@ -528,8 +541,10 @@ def run_tailoring(min_score: int = 7, limit: int = 20) -> dict:
             result["title"][:40],
         )
 
-    # Persist to DB: increment attempt counter for ALL, save path only for approved
+    # Persist to DB: increment attempt counter for all rows. For supported ATS,
+    # keep failed tailoring rows eligible by falling back to base resume.
     now = datetime.now(timezone.utc).isoformat()
+    fallback_used = 0
     for r in results:
         if r["status"] == "approved":
             conn.execute(
@@ -538,20 +553,31 @@ def run_tailoring(min_score: int = 7, limit: int = 20) -> dict:
                 (r["path"], now, r["url"]),
             )
         else:
-            conn.execute(
-                "UPDATE jobs SET tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
-                (r["url"],),
-            )
+            apply_url = (r.get("application_url") or r.get("url") or "")
+            if _is_supported_ats(apply_url):
+                fallback_resume = str(RESUME_PDF_PATH if RESUME_PDF_PATH.exists() else RESUME_PATH)
+                conn.execute(
+                    "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
+                    "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
+                    (fallback_resume, now, r["url"]),
+                )
+                fallback_used += 1
+            else:
+                conn.execute(
+                    "UPDATE jobs SET tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
+                    (r["url"],),
+                )
     conn.commit()
 
     elapsed = time.time() - t0
     log.info(
-        "Tailoring done in %.1fs: %d approved, %d failed_validation, %d failed_judge, %d errors",
+        "Tailoring done in %.1fs: %d approved, %d failed_validation, %d failed_judge, %d errors, %d fallback",
         elapsed,
         stats.get("approved", 0),
         stats.get("failed_validation", 0),
         stats.get("failed_judge", 0),
         stats.get("error", 0),
+        fallback_used,
     )
 
     return {

@@ -120,6 +120,16 @@ API keys and runtime config: `GEMINI_API_KEY`, `LLM_MODEL`, `CAPSOLVER_API_KEY` 
 - `config/sites.yaml` - Direct career sites (30+), blocked sites, base URLs, manual ATS domains
 - `config/searches.example.yaml` - Example search configuration
 
+### Storage Path and Permissions
+
+ApplyPilot stores runtime data in a user directory:
+
+- Default: `~/.applypilot`
+- Windows fallback: `%LOCALAPPDATA%/ApplyPilot` if `~/.applypilot` is not writable
+- Override: set `APPLYPILOT_DIR` to any writable directory
+
+If you see `unable to open database file` or storage initialization errors, point `APPLYPILOT_DIR` at a writable path and rerun your command.
+
 ---
 
 ## How Stages Work

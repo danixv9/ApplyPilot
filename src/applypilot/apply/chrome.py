@@ -6,6 +6,7 @@ worker profile setup/cloning, and cross-platform process cleanup.
 
 import json
 import logging
+import os
 import platform
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ BASE_CDP_PORT = 9222
 
 # Track Chrome processes per worker for cleanup
 _chrome_procs: dict[int, subprocess.Popen] = {}
+_chrome_profiles: dict[int, Path] = {}
 _chrome_lock = threading.Lock()
 
 
@@ -201,7 +203,26 @@ def launch_chrome(worker_id: int, port: int | None = None,
     if port is None:
         port = BASE_CDP_PORT + worker_id
 
-    profile_dir = setup_worker_profile(worker_id)
+    clean_profile = os.environ.get("APPLYPILOT_CLEAN_PROFILE", "").strip().lower() in ("1", "true", "yes")
+    if clean_profile:
+        base = config.CHROME_WORKER_DIR
+        # Use a unique clean profile per launch to avoid lock contention after
+        # rapid crash/restart cycles where old Chrome children still hold files.
+        profile_dir = base / f"worker-{worker_id}-clean-{int(time.time() * 1000)}-{os.getpid()}"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        # Best-effort cleanup of older ephemeral profiles to cap disk growth.
+        stale = sorted(
+            base.glob(f"worker-{worker_id}-clean-*"),
+            key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+            reverse=True,
+        )
+        for old in stale[4:]:
+            try:
+                shutil.rmtree(str(old), ignore_errors=True)
+            except Exception:
+                logger.debug("Failed removing stale worker profile: %s", old, exc_info=True)
+    else:
+        profile_dir = setup_worker_profile(worker_id)
 
     # Kill any zombie Chrome from a previous run on this port
     _kill_on_port(port)
@@ -226,6 +247,11 @@ def launch_chrome(worker_id: int, port: int | None = None,
         "--password-store=basic",
         "--disable-save-password-bubble",
         "--disable-popup-blocking",
+        "--disable-extensions",
+        "--disable-component-extensions-with-background-pages",
+        "--disable-background-networking",
+        "--disable-renderer-backgrounding",
+        "--disable-dev-shm-usage",
         # Block dangerous permissions at browser level
         "--use-fake-device-for-media-stream",
         "--use-fake-ui-for-media-stream",
@@ -238,12 +264,12 @@ def launch_chrome(worker_id: int, port: int | None = None,
     # On Unix, start in a new process group so we can kill the whole tree
     kwargs: dict = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if platform.system() != "Windows":
-        import os
         kwargs["preexec_fn"] = os.setsid
 
     proc = subprocess.Popen(cmd, **kwargs)
     with _chrome_lock:
         _chrome_procs[worker_id] = proc
+        _chrome_profiles[worker_id] = profile_dir
 
     # Give Chrome time to start and open the debug port
     time.sleep(3)
@@ -261,8 +287,19 @@ def cleanup_worker(worker_id: int, process: subprocess.Popen | None) -> None:
     """
     if process and process.poll() is None:
         _kill_process_tree(process.pid)
+    profile_dir: Path | None = None
     with _chrome_lock:
         _chrome_procs.pop(worker_id, None)
+        profile_dir = _chrome_profiles.pop(worker_id, None)
+    if (
+        profile_dir
+        and profile_dir.exists()
+        and profile_dir.name.startswith(f"worker-{worker_id}-clean-")
+    ):
+        try:
+            shutil.rmtree(str(profile_dir), ignore_errors=True)
+        except Exception:
+            logger.debug("Failed removing worker clean profile: %s", profile_dir, exc_info=True)
     logger.info("[worker-%d] Chrome cleaned up", worker_id)
 
 
@@ -274,11 +311,23 @@ def kill_all_chrome() -> None:
     with _chrome_lock:
         procs = dict(_chrome_procs)
         _chrome_procs.clear()
+        profiles = dict(_chrome_profiles)
+        _chrome_profiles.clear()
 
     for wid, proc in procs.items():
         if proc.poll() is None:
             _kill_process_tree(proc.pid)
         _kill_on_port(BASE_CDP_PORT + wid)
+    for wid, profile_dir in profiles.items():
+        if (
+            profile_dir
+            and profile_dir.exists()
+            and profile_dir.name.startswith(f"worker-{wid}-clean-")
+        ):
+            try:
+                shutil.rmtree(str(profile_dir), ignore_errors=True)
+            except Exception:
+                logger.debug("Failed removing worker clean profile: %s", profile_dir, exc_info=True)
 
     # Sweep base port in case of zombies
     _kill_on_port(BASE_CDP_PORT)

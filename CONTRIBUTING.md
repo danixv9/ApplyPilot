@@ -28,6 +28,13 @@ pytest tests/ -v
 ruff check src/
 ```
 
+If storage initialization fails with `unable to open database file`, use a writable data directory:
+
+```bash
+export APPLYPILOT_DIR=/tmp/.applypilot   # macOS/Linux
+setx APPLYPILOT_DIR "C:\\Users\\<you>\\AppData\\Local\\ApplyPilot"   # Windows (new shells)
+```
+
 ## How to Contribute
 
 ### Adding New Workday Employers

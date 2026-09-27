@@ -5,8 +5,64 @@ import platform
 import shutil
 from pathlib import Path
 
-# User data directory — all user-specific files live here
-APP_DIR = Path(os.environ.get("APPLYPILOT_DIR", Path.home() / ".applypilot"))
+
+def _default_app_dir() -> Path:
+    """Primary storage location for user data."""
+    return Path.home() / ".applypilot"
+
+
+def _windows_fallback_app_dir() -> Path | None:
+    """Windows fallback location when the home directory path is not writable."""
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return None
+    return Path(local_app_data) / "ApplyPilot"
+
+
+def is_writable_dir(path: Path) -> bool:
+    """Return True if a directory can be created and written to."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+
+    probe = path / f".applypilot-write-probe-{os.getpid()}"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError:
+        return False
+
+    return True
+
+
+def resolve_app_dir() -> Path:
+    """Resolve a writable storage directory.
+
+    Priority:
+      1. APPLYPILOT_DIR override (always respected)
+      2. ~/.applypilot (if writable)
+      3. Windows fallback: %LOCALAPPDATA%/ApplyPilot (if writable)
+      4. ~/.applypilot (final fallback with explicit error later if unwritable)
+    """
+    env_path = os.environ.get("APPLYPILOT_DIR")
+    if env_path:
+        return Path(env_path).expanduser()
+
+    default_dir = _default_app_dir()
+    if is_writable_dir(default_dir):
+        return default_dir
+
+    if platform.system() == "Windows":
+        win_fallback = _windows_fallback_app_dir()
+        if win_fallback and is_writable_dir(win_fallback):
+            return win_fallback
+
+    return default_dir
+
+
+# User data directory - all user-specific files live here
+APP_DIR = resolve_app_dir()
 
 # Core paths
 DB_PATH = APP_DIR / "applypilot.db"
@@ -158,7 +214,7 @@ def load_base_urls() -> dict[str, str | None]:
 
 
 # ---------------------------------------------------------------------------
-# Default values — referenced across modules instead of magic numbers
+# Default values - referenced across modules instead of magic numbers
 # ---------------------------------------------------------------------------
 
 DEFAULTS = {
@@ -181,7 +237,7 @@ def load_env():
 
 
 # ---------------------------------------------------------------------------
-# Tier system — feature gating by installed dependencies
+# Tier system - feature gating by installed dependencies
 # ---------------------------------------------------------------------------
 
 TIER_LABELS = {
@@ -239,14 +295,14 @@ def check_tier(required: int, feature: str) -> None:
 
     missing: list[str] = []
     if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")):
-        missing.append("LLM API key — run [bold]applypilot init[/bold] or set GEMINI_API_KEY")
+        missing.append("LLM API key - run [bold]applypilot init[/bold] or set GEMINI_API_KEY")
     if required >= 3:
         if not shutil.which("claude"):
-            missing.append("Claude Code CLI — install from [bold]https://claude.ai/code[/bold]")
+            missing.append("Claude Code CLI - install from [bold]https://claude.ai/code[/bold]")
         try:
             get_chrome_path()
         except FileNotFoundError:
-            missing.append("Chrome/Chromium — install or set CHROME_PATH")
+            missing.append("Chrome/Chromium - install or set CHROME_PATH")
 
     _console.print(
         f"\n[red]'{feature}' requires {TIER_LABELS.get(required, f'Tier {required}')} (Tier {required}).[/red]\n"

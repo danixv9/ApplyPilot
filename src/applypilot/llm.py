@@ -1,10 +1,11 @@
 """
 Unified LLM client for ApplyPilot.
 
-Auto-detects provider from environment:
-  GEMINI_API_KEY  -> Google Gemini (default: gemini-2.0-flash)
-  OPENAI_API_KEY  -> OpenAI (default: gpt-4o-mini)
-  LLM_URL         -> Local llama.cpp / Ollama compatible endpoint
+Auto-detects provider from environment (highest precedence first):
+  OPENROUTER_API_KEY  -> OpenRouter (default: anthropic/claude-sonnet-4.6)
+  GEMINI_API_KEY      -> Google Gemini (default: gemini-2.0-flash)
+  OPENAI_API_KEY      -> OpenAI (default: gpt-4o-mini)
+  LLM_URL             -> Local llama.cpp / Ollama compatible endpoint
 
 LLM_MODEL env var overrides the model name for any provider.
 """
@@ -21,6 +22,7 @@ log = logging.getLogger(__name__)
 # Provider detection
 # ---------------------------------------------------------------------------
 
+_OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 _GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 _OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 _LOCAL_URL = os.environ.get("LLM_URL", "")
@@ -29,6 +31,13 @@ _LOCAL_URL = os.environ.get("LLM_URL", "")
 def _detect_provider() -> tuple[str, str, str]:
     """Return (base_url, model, api_key) based on environment variables."""
     model_override = os.environ.get("LLM_MODEL", "")
+
+    if _OPENROUTER_KEY:
+        return (
+            "https://openrouter.ai/api/v1",
+            model_override or "anthropic/claude-sonnet-4.6",
+            _OPENROUTER_KEY,
+        )
 
     if _GEMINI_KEY and not _LOCAL_URL:
         return (

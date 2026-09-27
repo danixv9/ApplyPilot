@@ -7,14 +7,50 @@ without migration ordering issues.
 
 import sqlite3
 import threading
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from applypilot.config import DB_PATH
+from applypilot.config import DB_PATH, is_writable_dir
 
 # Thread-local connection storage — each thread gets its own connection
 # (required for SQLite thread safety with parallel workers)
 _local = threading.local()
+log = logging.getLogger(__name__)
+
+
+class StorageInitError(RuntimeError):
+    """Raised when ApplyPilot storage cannot be initialized safely."""
+
+
+def _ensure_writable_parent(path: Path) -> None:
+    """Ensure the database parent directory is writable."""
+    parent = path.parent
+    if is_writable_dir(parent):
+        return
+    raise StorageInitError(
+        f"Data directory is not writable: {parent}"
+    )
+
+
+def _configure_journal_mode(conn: sqlite3.Connection, db_path: Path) -> None:
+    """Prefer WAL mode; fall back to DELETE mode if WAL is unavailable."""
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        return
+    except sqlite3.OperationalError as wal_error:
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE")
+            log.warning(
+                "WAL unavailable for %s (%s). Falling back to DELETE journal mode.",
+                db_path,
+                wal_error,
+            )
+            return
+        except sqlite3.OperationalError as delete_error:
+            raise StorageInitError(
+                f"Unable to set SQLite journal mode for {db_path}"
+            ) from delete_error
 
 
 def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
@@ -29,7 +65,8 @@ def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
     Returns:
         sqlite3.Connection configured with WAL mode and row factory.
     """
-    path = str(db_path or DB_PATH)
+    db_file = Path(db_path or DB_PATH)
+    path = str(db_file)
 
     if not hasattr(_local, 'connections'):
         _local.connections = {}
@@ -42,8 +79,21 @@ def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
         except sqlite3.ProgrammingError:
             pass
 
-    conn = sqlite3.connect(path, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL")
+    _ensure_writable_parent(db_file)
+
+    try:
+        conn = sqlite3.connect(path, timeout=30)
+    except sqlite3.OperationalError as exc:
+        raise StorageInitError(
+            f"Unable to open database file: {db_file}"
+        ) from exc
+
+    try:
+        _configure_journal_mode(conn, db_file)
+    except StorageInitError:
+        conn.close()
+        raise
+
     conn.execute("PRAGMA busy_timeout=10000")
     conn.row_factory = sqlite3.Row
     _local.connections[path] = conn
@@ -84,7 +134,12 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     path = db_path or DB_PATH
 
     # Ensure parent directory exists
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise StorageInitError(
+            f"Failed to create database directory: {Path(path).parent}"
+        ) from exc
 
     conn = get_connection(path)
     conn.execute("""
@@ -286,7 +341,8 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
 
     stats["untailored_eligible"] = conn.execute(
         "SELECT COUNT(*) FROM jobs "
-        "WHERE fit_score >= 7 AND full_description IS NOT NULL "
+        "WHERE fit_score >= 7 "
+        "AND COALESCE(NULLIF(full_description, ''), NULLIF(description, '')) IS NOT NULL "
         "AND tailored_resume_path IS NULL"
     ).fetchone()[0]
 
@@ -387,7 +443,8 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
         "pending_score": "full_description IS NOT NULL AND fit_score IS NULL",
         "scored": "fit_score IS NOT NULL",
         "pending_tailor": (
-            "fit_score >= ? AND full_description IS NOT NULL "
+            "fit_score >= ? "
+            "AND COALESCE(NULLIF(full_description, ''), NULLIF(description, '')) IS NOT NULL "
             "AND tailored_resume_path IS NULL AND COALESCE(tailor_attempts, 0) < 5"
         ),
         "tailored": "tailored_resume_path IS NOT NULL",
@@ -410,7 +467,20 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
         where += " AND fit_score >= ?"
         params.append(min_score)
 
-    query = f"SELECT * FROM jobs WHERE {where} ORDER BY fit_score DESC NULLS LAST, discovered_at DESC"
+    order_by = "fit_score DESC NULLS LAST, discovered_at DESC"
+    if stage == "pending_tailor":
+        # Prioritize ATS domains that the Playwright apply engine can submit.
+        order_by = (
+            "CASE WHEN ("
+            "lower(coalesce(application_url, url)) LIKE '%jobs.ashbyhq.com%' "
+            "OR lower(coalesce(application_url, url)) LIKE '%jobs.lever.co%' "
+            "OR lower(coalesce(application_url, url)) LIKE '%lever.co%' "
+            "OR lower(coalesce(application_url, url)) LIKE '%greenhouse.io%'"
+            ") THEN 0 ELSE 1 END, "
+            "fit_score DESC NULLS LAST, discovered_at DESC"
+        )
+
+    query = f"SELECT * FROM jobs WHERE {where} ORDER BY {order_by}"
     if limit > 0:
         query += " LIMIT ?"
         params.append(limit)
